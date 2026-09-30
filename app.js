@@ -12,7 +12,7 @@ function load() {
 }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(st)); } catch {} }
 
-const sprite = (form, asleep) => `assets/${form}${asleep && form !== 'egg' ? '_sleep' : ''}.webp`;
+const sprite = (form, asleep) => `assets/${form}${asleep && form !== 'egg' ? '_sleep' : ''}.png`;
 const fmt = m => { m = Math.max(0, Math.ceil(m)); const h = Math.floor(m / 60); return h ? `${h}時間${m % 60 ? `${m % 60}分` : ''}` : `${m}分`; };
 const clock = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 3600)}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
 const time = t => { const d = new Date(t); return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`; };
@@ -21,6 +21,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const preload = src => new Promise(r => { const i = new Image(); i.onload = i.onerror = r; i.src = src; });
 const setSrc = (img, src) => { if (img.getAttribute('src') !== src) img.src = src; };
+const HEART = 'M1 0h2v1h1V0h2v1h1v2H6v1H5v1H4v1H3V5H2V4H1V3H0V1h1z'; // 7x6 pixel heart
 const stars = f => f.rare ? `<em class="rare">${'★'.repeat(f.rare)}${f.rare > 1 ? 'でんせつ' : 'レア'}</em>` : '';
 
 const TALK = {
@@ -33,13 +34,13 @@ const TALK = {
 function render() {
   const now = Date.now(), p = st.pet, f = FORMS[p.form], s = f.stage, night = isNight(now);
   document.body.classList.toggle('night', night);
-  setSrc($('#bg'), `assets/bg_${night ? 'night' : 'day'}.webp`);
+  setSrc($('#bg'), `assets/bg_${night ? 'night' : 'day'}.png`);
   setSrc($('#pet'), sprite(p.form));
-  $('#petWrap').className = `pet-wrap s${s}${p.shiny && s ? ' shiny' : ''}${s && !p.energy ? ' tired' : ''}`;
+  $('#petWrap').className = `pet s${s}${p.shiny && s ? ' shiny' : ''}${s && !p.energy ? ' tired' : ''}`;
   $('#name').textContent = p.name;
   $('#age').textContent = `${Math.floor((now - p.born) / 864e5) + 1}日目`;
   $('#stage').innerHTML = `${STAGES[s]}${s ? `・${f.name}` : ''}${stars(f)}${p.shiny && s ? ' ✨' : ''}`;
-  $('#hearts').innerHTML = s ? Array.from({ length: HEARTS }, (_, i) => `<i class="${i < Math.ceil(p.energy) ? 'on' : ''}"></i>`).join('') : '';
+  $('#hearts').innerHTML = s ? Array.from({ length: HEARTS }, (_, i) => `<svg viewBox="0 0 7 6" class="${i < Math.ceil(p.energy) ? 'on' : ''}"><path d="${HEART}"/></svg>`).join('') : '';
   const lo = s ? NEXT[s - 1] : 0, hi = NEXT[s];
   $('#barFill').style.width = `${Math.min(1, (p.xp - lo) / (hi - lo)) * 100}%`;
   $('#goal').textContent = !s ? `あと ${fmt(hi - p.xp)} スマホを置くと うまれるよ`

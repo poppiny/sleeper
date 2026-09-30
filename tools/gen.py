@@ -1,16 +1,18 @@
-"""Sleeper asset pipeline: ComfyUI (FLUX.2 klein 4B + BiRefNet) -> candidates -> pick -> assets/*.webp
+﻿"""Sleeper asset pipeline: ComfyUI (FLUX.2 klein 4B + BiRefNet) -> candidates -> pick -> pixel art -> assets/*.png
 
 usage:
   python tools/gen.py awake [id,...] [n]   n candidates per character (default 3)
   python tools/gen.py sleep [id,...] [n]   sleeping variants, referenced from the picked awake image
   python tools/gen.py bg day|night [n]     room backgrounds (night references the picked day room)
-  python tools/gen.py sheet <prefix>       contact sheet of candidates, e.g. "awake" or "sleep_tsuki"
-  python tools/gen.py pick <name> <k>      choose candidate k, e.g. "pick awake_tsuki 2"
-  python tools/gen.py build                picked -> assets/*.webp + app icons
+  python tools/gen.py pixel [name,...] [n] pixel-art redraw of picks, e.g. "pixel awake_tsuki,bg_day"
+  python tools/gen.py sheet <prefix>       contact sheet of candidates, e.g. "awake" or "pix_sleep"
+  python tools/gen.py pick <name> <k>      choose candidate k, e.g. "pick pix_awake_tsuki 1"
+  python tools/gen.py build                pix_* picks -> assets/*.png + app icons
 """
 import json, sys, time, uuid, shutil, random, urllib.request
+from collections import Counter
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "tools" / "work"
@@ -61,6 +63,17 @@ BG = {
               "the window shows a starry night sky with a crescent moon, a small night lamp glowing warmly. "
               "No characters, no animals, no text."),
 }
+
+PIXEL = ("Redraw the character from the reference image as a retro 16-bit pixel art game sprite, like a monster sprite from a SNES RPG. "
+         "Keep exactly the same character design, pose, colors and signature features. "
+         "Big chunky square pixels on a strict grid (the whole character is about 48 pixels tall), limited palette of clear saturated colors, "
+         "crisp one-pixel dark outline, simple 2-3 tone cel shading, no anti-aliasing, no gradients, no blur. "
+         "Readable at small size: few large flat color areas, no tiny sparkles or speckles. "
+         "Only one character, full body, centered, plain pure white background, no text.")
+PIXEL_BG = ("Redraw the reference image as a retro 16-bit pixel art game background, like a room in a SNES RPG. "
+            "Same room, same composition, same lighting and colors. Big chunky square pixels on a strict grid (the image is about "
+            "128 pixels wide), limited palette, no anti-aliasing, no blur. No characters, no animals, no text.")
+PIX_H = {"egg": 26, "baby": 24, "moko": 34, "bosa": 34}  # sprite height in pixels (adults: 48) on a shared pixel scale
 
 
 # ---------- ComfyUI ----------
@@ -154,6 +167,18 @@ def cmd_bg(kind, n=3):
          for k in range(int(n))])
 
 
+def cmd_pixel(names=None, n=2):
+    """Pixel-art redraw of picked images (awake_x, sleep_x, bg_x), referenced from the pick itself."""
+    names = names.split(",") if names else sorted(p.stem for p in (WORK / "pick").glob("*.png") if not p.stem.startswith("pix_"))
+    jobs = []
+    for nm in names:
+        kind, c = nm.split("_", 1)
+        prompt = PIXEL_BG if kind == "bg" else PIXEL + (" It is fast asleep, curled up with its eyes closed." if kind == "sleep" else f" Signature features: {CHARS[c]}")
+        jobs += [(workflow(prompt, seed(), f"sleeper/pix_{nm}", ref=f"sleeper/{nm}.png", remove_bg=kind != "bg"), WORK / "cand" / f"pix_{nm}_{k}")
+                 for k in range(int(n))]
+    run(jobs)
+
+
 def cmd_sheet(prefix):
     files = sorted(p for p in (WORK / "cand").glob(prefix + "*.png") if not p.stem.endswith("_raw"))
     cols, s = 6, 256
@@ -161,6 +186,9 @@ def cmd_sheet(prefix):
     d = ImageDraw.Draw(sheet)
     for i, p in enumerate(files):
         im = Image.open(p).convert("RGBA")
+        if p.stem.startswith("pix_"):  # preview the final snapped pixel art
+            im = grid(im, 128, 128, 48) if p.stem.startswith("pix_bg") else pixelate(im, 48)
+            im = im.resize((im.width * (s // max(im.size)), im.height * (s // max(im.size))), Image.NEAREST)
         im.thumbnail((s, s))
         x, y = i % cols * s, i // cols * (s + 18)
         sheet.paste(im, (x, y), im)
@@ -180,33 +208,67 @@ def cmd_pick(name, k):
     print("picked", name, k)
 
 
+def grid(im, w, h, colors=32):
+    """Snap an AI 'pixel art' render onto a real w x h pixel grid. Each cell takes its most common palette color
+    (or transparency), so small accents stay crisp instead of being averaged away."""
+    im = im.convert("RGBA")
+    pal = im.convert("RGB").quantize(colors, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.NONE)
+    rgb, idx, alpha = pal.getpalette(), pal.load(), im.getchannel("A").load()
+    out = Image.new("RGBA", (w, h))
+    for y in range(h):
+        for x in range(w):
+            votes = Counter(idx[i, j] if alpha[i, j] > 110 else -1
+                            for j in range(y * im.height // h, (y + 1) * im.height // h)
+                            for i in range(x * im.width // w, (x + 1) * im.width // w))
+            c = votes.most_common(1)[0][0]
+            if c >= 0:
+                out.putpixel((x, y), (*rgb[c * 3:c * 3 + 3], 255))
+    return out
+
+
+def pixelate(im, h):
+    """Crop a sprite to its silhouette, snap it to a grid about h pixels tall (at most 58 wide), add a 1px outline."""
+    im = im.convert("RGBA")
+    im = im.crop(im.getchannel("A").getbbox())
+    s = min(h / im.height, 58 / im.width)
+    sp = grid(im, max(1, round(im.width * s)), max(1, round(im.height * s)))
+    c = Image.new("RGBA", (sp.width + 2, sp.height + 2))
+    c.alpha_composite(sp, (1, 1))
+    a, px = c.getchannel("A").load(), c.load()
+    for y in range(c.height):
+        for x in range(c.width):
+            if not a[x, y] and any(0 <= x + dx < c.width and 0 <= y + dy < c.height and a[x + dx, y + dy]
+                                   for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                px[x, y] = (31, 26, 51, 255)
+    return c
+
+
 def cmd_build():
+    """pick/pix_* -> assets/*.png: 64x64 sprites on one shared pixel scale, 128x128 rooms, pixel app icons."""
     ASSETS.mkdir(exist_ok=True)
-    for p in sorted((WORK / "pick").glob("*.png")):
-        kind, name = p.stem.split("_", 1)
-        im = Image.open(p).convert("RGBA")
+    for p in sorted((WORK / "pick").glob("pix_*.png")):
+        kind, name = p.stem[4:].split("_", 1)
+        im = Image.open(p)
         if kind == "bg":
-            im.convert("RGB").resize((768, 768), Image.LANCZOS).save(ASSETS / f"bg_{name}.webp", quality=80)
+            grid(im, 128, 128, 48).save(ASSETS / f"bg_{name}.png", optimize=True)
             continue
-        a = im.getchannel("A").point(lambda v: 0 if v < 40 else (255 if v > 215 else v))
-        im.putalpha(a)
-        im = im.crop(a.getbbox())
-        im.thumbnail((480, 480), Image.LANCZOS)
-        # bottom-aligned square canvas: every sprite stands on the same floor line
-        c = Image.new("RGBA", (512, 512))
-        c.alpha_composite(im, ((512 - im.width) // 2, 512 - 8 - im.height))
-        c.save(ASSETS / (f"{name}.webp" if kind == "awake" else f"{name}_sleep.webp"), quality=86, method=6)
-    egg = Image.open(ASSETS / "egg.webp").convert("RGBA")
+        h = PIX_H.get(name, 48)
+        sp = pixelate(im, round(h * 0.8) if kind == "sleep" else h)
+        c = Image.new("RGBA", (64, 64))  # bottom-aligned: every sprite stands on the same floor line
+        c.alpha_composite(sp, ((64 - sp.width) // 2, 62 - sp.height))
+        c.save(ASSETS / (f"{name}.png" if kind == "awake" else f"{name}_sleep.png"), optimize=True)
+    egg = Image.open(ASSETS / "egg.png")
     egg = egg.crop(egg.getchannel("A").getbbox())
     for size, fname in ((180, "apple-touch-icon.png"), (192, "icon-192.png"), (512, "icon-512.png")):
-        bg = ImageOps.colorize(Image.linear_gradient("L").resize((size, size)), "#2b2d6e", "#b9a7ea").convert("RGBA")
-        e = egg.copy()
-        e.thumbnail((int(size * 0.72), int(size * 0.72)), Image.LANCZOS)
-        bg.alpha_composite(e, ((size - e.width) // 2, (size - e.height) // 2 + size // 40))
+        k = int(size * 0.62 / max(egg.size))
+        e = egg.resize((egg.width * k, egg.height * k), Image.NEAREST)
+        bg = Image.new("RGBA", (size, size), "#1d1b3a")
+        bg.alpha_composite(e, ((size - e.width) // 2, (size - e.height) // 2))
         bg.convert("RGB").save(ASSETS / fname)
     print("built", len(list(ASSETS.iterdir())), "files")
 
 
 if __name__ == "__main__":
     cmd, *args = sys.argv[1:]
-    {"awake": cmd_awake, "sleep": cmd_sleep, "bg": cmd_bg, "sheet": cmd_sheet, "pick": cmd_pick, "build": cmd_build}[cmd](*args)
+    {"awake": cmd_awake, "sleep": cmd_sleep, "bg": cmd_bg, "pixel": cmd_pixel, "sheet": cmd_sheet, "pick": cmd_pick,
+     "build": cmd_build}[cmd](*args)
