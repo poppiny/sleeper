@@ -1,0 +1,16 @@
+{
+  "name": "ねむりん",
+  "short_name": "ねむりん",
+  "description": "スマホを置いた時間だけ育つ、ねむたい育成ゲーム",
+  "lang": "ja",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fdf1e8",
+  "theme_color": "#fdf1e8",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
